@@ -14,26 +14,16 @@ executor = ThreadPoolExecutor(max_workers=1)
 
 @app.route('/recognise/faceid', methods=['GET', 'POST'])
 def runFacialRecognitionLogin():
-    print("Gets in method in python")
-
-    # Start the face recognition in a new thread and get a Future object
-    future = executor.submit(recognise_face_main)
-
-    # Get the result from the Future
-    result = future.result()
-
-    # Return the result
-    if result:
-        print("Face is in storage")
-        return jsonify(True)
-    else:
-        print("Face is NOT in storage")
-        return jsonify(False)
+    print("Gets in recognise Controller")
+    # Start the face recognition in a new thread
+    result = threading.Thread(target=recognise_face_main).start()
+    print(f"the result of your face being in the repo is: {result}")
+    return jsonify(True)
 
 
 @app.route('/register/faceid', methods=['GET', 'POST'])
 def runFacialRecognitionSignUp():
-    print("Getting into sign up backend")
+    print("Gets in register Controller")
     # Start the face recognition in a new thread
     threading.Thread(target=register_face_main).start()
 

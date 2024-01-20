@@ -1,74 +1,111 @@
+import os
 import time
 from PIL import Image
 import cv2
 import face_recognition
-import os
 import requests
 import base64
 import io
 import numpy as np
 
 
-def check_in_github(filename):
-    # Set your personal access token, repo, and owner
-    token = os.getenv('GITHUB_TOKEN')
-    owner = 'johnmcg23'
-    repo = 'ImagesForAI'
-
+def fetch_repository_contents(github_token, owner, repo):
     # Set the headers for the API request
     headers = {
-        'Authorization': 'token ' + token,
+        'Authorization': 'token ' + github_token,
         'Accept': 'application/vnd.github.v3+json'
     }
 
-    # Make the API request
-    response = requests.get(f'https://api.github.com/repos/{owner}/{repo}/contents/{filename}', headers=headers)
+    try:
+        # Make the API request to get the contents of the repository
+        response = requests.get(f'https://api.github.com/repos/{owner}/{repo}/contents', headers=headers)
 
-    # Check the response
-    if response.status_code == 200:
-        # The file exists in the repo
-        # Now we need to compare the face in the current image with the one in the repo
-        # First, we load the image from the repo
-        img_base64 = response.json()['content']
-        img_data = base64.b64decode(img_base64)
+        # Raise an exception for unsuccessful responses
+        response.raise_for_status()
 
-        img = Image.open(io.BytesIO(img_data))
-        img_np = np.array(img)
+        return response.json()
 
-        # Then, we load the current image
-        current_img = cv2.imread(filename)
-        current_img_rgb = cv2.cvtColor(current_img, cv2.COLOR_BGR2RGB)
-
-        # Check if a face is detected in the current image
-        current_face_encodings = face_recognition.face_encodings(current_img_rgb)
-        if len(current_face_encodings) == 0:
-            print('Authentication face id failed')
-            return False
-
-        current_face_encoding = current_face_encodings[0]
-
-        # We get the face encodings for both images
-        repo_face_encoding = face_recognition.face_encodings(img_np)[0]
-
-        # And finally, we compare the faces
-        match = face_recognition.compare_faces([repo_face_encoding], current_face_encoding)
-
-        if match[0]:
-            print('Face matches')
-            return True
-        else:
-            print('Face does not match')
-            return False
-    else:
-        print('Username does not match')
-        return False
+    except requests.exceptions.RequestException as e:
+        print(f"Error fetching repository contents: {e}")
+        return []
 
 
-def main(username):
+def search_face_in_github(github_token, owner, repo, contents):
+    # Iterate through each file in the repository
+    for file_info in contents:
+        if 'download_url' in file_info and file_info['type'] == 'file':
+            # Download the image file
+            try:
+                image_content = requests.get(file_info['download_url']).content
+                img = Image.open(io.BytesIO(image_content))
+                img_np = np.array(img)
+
+                # Check if a face is detected in the current image
+                current_face_encodings = face_recognition.face_encodings(img_np)
+                if len(current_face_encodings) > 0:
+                    current_face_encoding = current_face_encodings[0]
+
+                    # Compare the face with all faces in the repository
+                    match, filename = compare_face_with_repo(github_token, owner, repo, contents, current_face_encoding)
+
+                    if match:
+                        print(f"Match in GitHub repo for this face. Filename: {filename}")
+                        return True
+
+            except Exception as e:
+                print(f"Error processing image: {e}")
+
+    # No match found in any image in the repository
+    print("No match in this repo for this face")
+    return False
+
+
+def compare_face_with_repo(github_token, owner, repo, contents, current_face_encoding):
+    # Iterate through each file in the repository
+    for file_info in contents:
+        if 'download_url' in file_info and file_info['type'] == 'file':
+            # Download the image file
+            try:
+                image_content = requests.get(file_info['download_url']).content
+                img = Image.open(io.BytesIO(image_content))
+                img_np = np.array(img)
+
+                # Get the face encodings for the image in the repository
+                repo_face_encodings = face_recognition.face_encodings(img_np)
+
+                for repo_face_encoding in repo_face_encodings:
+                    # Check if the face encodings are different before comparison
+                    if not np.array_equal(current_face_encoding, repo_face_encoding):
+                        # Set the distance threshold for face matching
+                        distance_threshold = 0.6
+
+                        # Compare the faces
+                        match = face_recognition.compare_faces(
+                            [repo_face_encoding],
+                            current_face_encoding,
+                            tolerance=distance_threshold
+                        )
+
+                        if any(match):
+                            # Return the match and filename
+                            print(file_info['name'])
+                            return True
+
+            except Exception as e:
+                print(f"Error processing image: {e}")
+
+    # No match found in any image in the repository
+    return False, None
+
+
+def main():
+    github_token, owner, repo = get_github_details()
+    contents = fetch_repository_contents(github_token, owner, repo)
+
     # Load the cascade
     face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
 
-    # To capture video from webcam
+    # To capture video from the webcam
     cap = cv2.VideoCapture(0)
 
     # Countdown parameters
@@ -79,7 +116,7 @@ def main(username):
     start_time = time.time()
 
     while True:
-        time.sleep(1)  # Delay execution for 2 seconds
+        time.sleep(1)  # Delay execution for 1 second
         # Read the frame
         _, img = cap.read()
 
@@ -101,16 +138,8 @@ def main(username):
 
             # If the countdown has finished
             if countdown < 0:
-                # Save the image with the username
-                filename = username + '.png'
-                cv2.imwrite(filename, img)
-
-                # Call the new function to check the image in GitHub
-                success = check_in_github(filename)
-
-                # Delete the local file
-                if os.path.exists(filename):
-                    os.remove(filename)
+                # Check the face in the GitHub repository
+                success = search_face_in_github(github_token, owner, repo, contents)
 
                 cap.release()
 
@@ -118,6 +147,14 @@ def main(username):
         else:
             print('No face detected')
             return False
+
+
+def get_github_details():
+    # Load the github details
+    github_token = os.getenv('GITHUB_TOKEN')
+    owner = 'johnmcg23'
+    repo = 'ImagesForAI'
+    return github_token, owner, repo
 
 
 if __name__ == "__main__":
